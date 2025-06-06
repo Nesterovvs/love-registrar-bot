@@ -1,16 +1,25 @@
-from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, filters
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 
-# ⚠️ Этот токен скомпрометирован. Замени его через @BotFather!
 BOT_TOKEN = '7927255180:AAHOriBODDYe0Sutdb-adIdR6YCu1EbgWnI'
 
-async def respond(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Ахмат сила")
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Ахмат сила 💪", callback_data="ahmat")]
+    ])
+    await update.message.reply_text("Нажми на кнопку:", reply_markup=keyboard)
+
+async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if query.data == "ahmat":
+        await query.message.reply_text("Ахмат сила")
 
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(MessageHandler(filters.ALL, respond))
-    print("Бот запущен. Ахмат сила.")
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(handle_button))
+    print("Бот с inline-кнопкой запущен.")
     app.run_polling()
 
 if __name__ == '__main__':
