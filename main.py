@@ -7,14 +7,12 @@ from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     ReplyKeyboardMarkup,
-    KeyboardButton,
-    InputFile
+    KeyboardButton
 )
 from aiogram.utils import executor
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.dispatcher import FSMContext
-from fpdf import FPDF
 
 API_TOKEN = os.getenv("BOT_TOKEN")  # Убедитесь, что на Render установлена переменная окружения BOT_TOKEN
 ADMIN_ID = 1096930119  # Ваш Telegram ID
@@ -56,7 +54,7 @@ conn.commit()
 # Временное хранилище для предложений (username → { proposer_id, proposer_username })
 pending = {}
 
-# Состояния для рассылки (админ)
+# Состояние для рассылки (админ)
 class Broadcast(StatesGroup):
     waiting_message = State()
 
@@ -85,9 +83,8 @@ main_menu.add(
     KeyboardButton("🧾 Мой профиль")
 )
 
-# Пятая строка: PDF-свидетельство и Подарок
+# Пятая строка: Подарок
 main_menu.add(
-    KeyboardButton("🖼 PDF-свидетельство"),
     KeyboardButton("🎁 Подарить сердечко")
 )
 
@@ -116,7 +113,6 @@ async def cmd_start(message: types.Message):
         "💔 Развод — /divorce\n"
         "📅 Годовщина — /anniversary\n"
         "📖 История брака — /marriage_story\n"
-        "🖼 PDF-свидетельство — /download_certificate\n"
         "🎁 Подарить сердечко — /gift\n"
         "🧾 Мой профиль — /my_marriage_profile\n"
         "📋 Список команд — показать это сообщение снова\n"
@@ -130,7 +126,8 @@ async def cmd_start(message: types.Message):
 async def broadcast_cmd(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         return
-    await message.reply("✉️ Введите сообщение для рассылки (или «Отмена»):", reply_markup=ReplyKeyboardMarkup(resize_keyboard=True).add("Отмена"))
+    await message.reply("✉️ Введите сообщение для рассылки (или «Отмена»):", 
+                        reply_markup=ReplyKeyboardMarkup(resize_keyboard=True).add("Отмена"))
     await Broadcast.waiting_message.set()
 
 # Обработка отмены рассылки
@@ -218,7 +215,7 @@ async def marry(message: types.Message):
     else:
         await message.reply(f"❗ @{partner_username} ещё не писал боту. Попроси его сначала нажать /start.", reply_markup=main_menu)
 
-# Обработка нажатия «Принять»/«Отказать»
+# Обработка нажатия «Принять»
 @dp.callback_query_handler(lambda c: c.data and c.data.startswith('accept:'))
 async def accept(callback: types.CallbackQuery):
     partner = callback.from_user
@@ -278,6 +275,7 @@ async def accept(callback: types.CallbackQuery):
     # Удаляем предложение из pending
     del pending[partner_username]
 
+# Обработка нажатия «Отказать»
 @dp.callback_query_handler(lambda c: c.data and c.data.startswith('decline:'))
 async def decline(callback: types.CallbackQuery):
     partner = callback.from_user
@@ -393,39 +391,6 @@ async def marriage_story(message: types.Message):
         f"💕 Вместе: {days} дн{'ей' if days % 10 in (2,3,4) and days % 100 not in (12,13,14) else 'ей'}.",
         reply_markup=main_menu
     )
-
-# Команда /download_certificate — PDF-свидетельство
-@dp.message_handler(commands=['download_certificate'])
-async def download_certificate(message: types.Message):
-    if message.from_user.username is None:
-        await message.reply("❗ Установите @username в настройках Telegram.", reply_markup=main_menu)
-        return
-
-    user = message.from_user.username.lower()
-    cursor.execute("SELECT user2, married_at FROM marriages WHERE user1=?", (user,))
-    row = cursor.fetchone()
-    if not row:
-        await message.reply("😢 У тебя нет брака.", reply_markup=main_menu)
-        return
-
-    partner, married_at = row
-    # Генерация PDF
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("Arial", "B", 16)
-    pdf.cell(0, 10, "Свидетельство о браке", ln=True, align="C")
-    pdf.ln(10)
-    pdf.set_font("Arial", size=12)
-    pdf.cell(0, 10, f"{datetime.strptime(married_at, '%Y-%m-%d %H:%M').strftime('%d.%m.%Y %H:%M')}", ln=True, align="C")
-    pdf.ln(10)
-    pdf.set_font("Arial", size=14)
-    pdf.cell(0, 10, f"@{message.from_user.username} ❤️ @{partner}", ln=True, align="C")
-
-    filename = f"certificate_{user}_{partner}.pdf"
-    pdf.output(filename)
-
-    await message.reply_document(InputFile(filename), reply_markup=main_menu)
-    os.remove(filename)
 
 # Команда /gift — отправить подарок партнёру (ограничение 1 в день)
 @dp.message_handler(commands=['gift'])
