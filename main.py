@@ -3,7 +3,13 @@ import os
 import sqlite3
 from datetime import datetime, date
 from aiogram import Bot, Dispatcher, types
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, InputFile
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    InputFile
+)
 from aiogram.utils import executor
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher.filters.state import State, StatesGroup
@@ -11,16 +17,18 @@ from aiogram.dispatcher import FSMContext
 from fpdf import FPDF
 
 API_TOKEN = os.getenv("BOT_TOKEN")  # Убедитесь, что на Render установлена переменная окружения BOT_TOKEN
-ADMIN_ID = 1096930119
+ADMIN_ID = 1096930119  # Ваш Telegram ID
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
 
-# Инициализация базы
+# ─────────────────────────────────────────────────────────────────────────────
+# Инициализируем базу данных SQLite
 conn = sqlite3.connect("database.db")
 cursor = conn.cursor()
+
 cursor.execute("""
     CREATE TABLE IF NOT EXISTS marriages (
         user1 TEXT,
@@ -44,59 +52,94 @@ cursor.execute("""
 """)
 conn.commit()
 
-# Словарь для хранения предложений до подтверждения
+# ─────────────────────────────────────────────────────────────────────────────
+# Временное хранилище для предложений (username → { proposer_id, proposer_username })
 pending = {}
 
-# Состояние для рассылки
+# Состояния для рассылки (админ)
 class Broadcast(StatesGroup):
     waiting_message = State()
 
-# Кнопки внизу для списка команд
-help_kb = ReplyKeyboardMarkup(resize_keyboard=True)
-help_kb.add(KeyboardButton("📋 Список команд"))
+# ─────────────────────────────────────────────────────────────────────────────
+# Настраиваем ReplyKeyboardMarkup (главное меню кнопок) под тематику LoveRegistrarBot
+main_menu = ReplyKeyboardMarkup(resize_keyboard=True)
 
-# Обработчик /start и кнопки "📋 Список команд"
+# Первая строка: Предложить брак
+main_menu.add(KeyboardButton("💍 Предложить брак"))
+
+# Вторая строка: Мой супруг/супруга и Развод
+main_menu.add(
+    KeyboardButton("💞 Мой супруг/супруга"),
+    KeyboardButton("💔 Развод")
+)
+
+# Третья строка: Свидетельство и Годовщина
+main_menu.add(
+    KeyboardButton("📜 Свидетельство"),
+    KeyboardButton("📅 Годовщина")
+)
+
+# Четвёртая строка: История брака и Мой профиль
+main_menu.add(
+    KeyboardButton("📖 История брака"),
+    KeyboardButton("🧾 Мой профиль")
+)
+
+# Пятая строка: PDF-свидетельство и Подарок
+main_menu.add(
+    KeyboardButton("🖼 PDF-свидетельство"),
+    KeyboardButton("🎁 Подарить сердечко")
+)
+
+# Шестая строка: Список команд (справка)
+main_menu.add(KeyboardButton("📋 Список команд"))
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Обработчик /start и кнопки «📋 Список команд»
 @dp.message_handler(commands=['start'])
 @dp.message_handler(lambda m: m.text == "📋 Список команд")
-async def send_welcome(message: types.Message):
+async def cmd_start(message: types.Message):
     user = message.from_user
-    # Сохраняем пользователя в базе
+    # Сохраняем пользователя в базе (если ещё не был)
     cursor.execute(
         "INSERT OR IGNORE INTO users (user_id, username, first_name) VALUES (?, ?, ?)",
-        (user.id, user.username, user.first_name)
+        (user.id, (user.username or "").lower(), user.first_name)
     )
     conn.commit()
 
     text = (
         "💍 Добро пожаловать в LoveRegistrarBot!\n\n"
         "📋 Список команд:\n"
-        "💍 /marry @username — Предложить брак\n"
-        "💞 /my_spouse — Узнать своего партнёра\n"
-        "📜 /certificate — Показать текстовое свидетельство\n"
-        "💔 /divorce — Расторгнуть брак\n\n"
-        "📅 /anniversary — Годовщина (дней вместе)\n"
-        "📖 /marriage_story — История брака\n"
-        "🖼 /download_certificate — Скачать PDF-свидетельство\n"
-        "🎁 /gift — Отправить подарок партнёру\n"
-        "🧾 /my_marriage_profile — Брачный профиль\n\n"
-        "👑 /broadcast — Рассылка (только для админа)\n"
+        "💍 Предложить брак — /marry @username\n"
+        "💞 Мой супруг/супруга — /my_spouse\n"
+        "📜 Свидетельство — /certificate\n"
+        "💔 Развод — /divorce\n"
+        "📅 Годовщина — /anniversary\n"
+        "📖 История брака — /marriage_story\n"
+        "🖼 PDF-свидетельство — /download_certificate\n"
+        "🎁 Подарить сердечко — /gift\n"
+        "🧾 Мой профиль — /my_marriage_profile\n"
+        "📋 Список команд — показать это сообщение снова\n"
+        "👑 /broadcast — рассылка (только для админа)\n"
     )
-    await message.reply(text, reply_markup=help_kb)
+    await message.reply(text, reply_markup=main_menu)
 
+# ─────────────────────────────────────────────────────────────────────────────
 # Команда /broadcast — только для админа
 @dp.message_handler(commands=['broadcast'])
 async def broadcast_cmd(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         return
-    await message.reply("✉️ Введите сообщение для рассылки:", reply_markup=ReplyKeyboardMarkup(resize_keyboard=True).add("Отмена"))
+    await message.reply("✉️ Введите сообщение для рассылки (или «Отмена»):", reply_markup=ReplyKeyboardMarkup(resize_keyboard=True).add("Отмена"))
     await Broadcast.waiting_message.set()
 
-# Обработка ввода текста для рассылки
+# Обработка отмены рассылки
 @dp.message_handler(lambda m: m.text == "Отмена", state=Broadcast.waiting_message)
 async def broadcast_cancel(message: types.Message, state: FSMContext):
-    await message.reply("❌ Рассылка отменена.", reply_markup=help_kb)
+    await message.reply("❌ Рассылка отменена.", reply_markup=main_menu)
     await state.finish()
 
+# Обработка ввода текста для рассылки
 @dp.message_handler(state=Broadcast.waiting_message, content_types=types.ContentTypes.TEXT)
 async def process_broadcast(message: types.Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
@@ -115,39 +158,42 @@ async def process_broadcast(message: types.Message, state: FSMContext):
         except:
             failed += 1
 
-    await message.reply(f"📢 Рассылка завершена\n✅ Успешно: {success}\n❌ Ошибок: {failed}", reply_markup=help_kb)
+    await message.reply(f"📢 Рассылка завершена\n✅ Успешно: {success}\n❌ Ошибок: {failed}", reply_markup=main_menu)
     await state.finish()
 
-# Команда /marry
+# ─────────────────────────────────────────────────────────────────────────────
+# Команда /marry @username
 @dp.message_handler(commands=['marry'])
 async def marry(message: types.Message):
     parts = message.text.split()
     if len(parts) != 2 or not parts[1].startswith('@'):
-        await message.reply("❗ Правильно: /marry @username", reply_markup=help_kb)
+        await message.reply("❗ Правильно: /marry @username", reply_markup=main_menu)
         return
 
     proposer = message.from_user
-    partner_username = parts[1][1:].lower()
-
     if proposer.username is None:
-        await message.reply("❗ У вас нет @username, установите его в настройках Telegram.", reply_markup=help_kb)
-        return
-    if proposer.username.lower() == partner_username:
-        await message.reply("😅 Нельзя жениться на себе.", reply_markup=help_kb)
+        await message.reply("❗ У вас нет @username. Установите его в настройках Telegram.", reply_markup=main_menu)
         return
 
-    # Сохраняем предложения
+    partner_username = parts[1][1:].lower()
+    if proposer.username.lower() == partner_username:
+        await message.reply("😅 Нельзя жениться на себе.", reply_markup=main_menu)
+        return
+
+    # Сохраняем инициатора в базе, если ещё не был
     cursor.execute(
         "INSERT OR IGNORE INTO users (user_id, username, first_name) VALUES (?, ?, ?)",
         (proposer.id, proposer.username.lower(), proposer.first_name)
     )
     conn.commit()
 
+    # Помещаем в pending
     pending[partner_username] = {
         "proposer_id": proposer.id,
         "proposer_username": proposer.username.lower()
     }
 
+    # Кнопки для подтверждения/отказа
     markup = InlineKeyboardMarkup()
     markup.add(
         InlineKeyboardButton("💖 Принять", callback_data=f"accept:{partner_username}"),
@@ -166,19 +212,23 @@ async def marry(message: types.Message):
                 f"@{partner_username}, @{proposer.username} предлагает тебе брак! 💍",
                 reply_markup=markup
             )
-            await message.reply(f"✅ Предложение отправлено @{partner_username}.", reply_markup=help_kb)
+            await message.reply(f"✅ Предложение отправлено @{partner_username}.", reply_markup=main_menu)
         except:
-            await message.reply(f"❗ Не удалось отправить предложение @{partner_username}. Возможно, он заблокировал бота.", reply_markup=help_kb)
+            await message.reply(f"❗ Не удалось отправить предложение @{partner_username}. Возможно, он заблокировал бота.", reply_markup=main_menu)
     else:
-        await message.reply(f"❗ @{partner_username} ещё не писал боту. Попросите его сначала нажать /start.", reply_markup=help_kb)
+        await message.reply(f"❗ @{partner_username} ещё не писал боту. Попроси его сначала нажать /start.", reply_markup=main_menu)
 
-# Обработка нажатий кнопок принятия/отказа
+# Обработка нажатия «Принять»/«Отказать»
 @dp.callback_query_handler(lambda c: c.data and c.data.startswith('accept:'))
 async def accept(callback: types.CallbackQuery):
     partner = callback.from_user
+    if partner.username is None:
+        await callback.answer("Ваш @username не задан.", show_alert=True)
+        return
+
     partner_username = partner.username.lower()
     data = pending.get(partner_username)
-    if not data or data["proposer_username"] is None:
+    if not data:
         await callback.message.edit_text("❗ Предложение не найдено или устарело.")
         return
 
@@ -197,7 +247,7 @@ async def accept(callback: types.CallbackQuery):
     )
     conn.commit()
 
-    await callback.message.edit_text(f"🎉 @{proposer_username} и @{partner_username} теперь пара! 🎉", reply_markup=help_kb)
+    await callback.message.edit_text(f"🎉 @{proposer_username} и @{partner_username} теперь пара! 🎉", reply_markup=main_menu)
 
     # Сохраняем партнёра в базе, если ещё нет
     cursor.execute(
@@ -208,20 +258,33 @@ async def accept(callback: types.CallbackQuery):
 
     # Уведомляем обоих участников
     try:
-        await bot.send_message(proposer_id, f"🎉 Вы теперь в браке с @{partner_username}! Пожелаем вам счастья 💖", reply_markup=help_kb)
-    except:
-        pass
-    try:
-        await bot.send_message(partner.id, f"🎉 Вы теперь в браке с @{proposer_username}! Пожелаем вам счастья 💖", reply_markup=help_kb)
+        await bot.send_message(
+            proposer_id,
+            f"🎉 Вы теперь в браке с @{partner_username}! Пожелаем вам счастья 💖",
+            reply_markup=main_menu
+        )
     except:
         pass
 
-    # Удаляем из pending
+    try:
+        await bot.send_message(
+            partner.id,
+            f"🎉 Вы теперь в браке с @{proposer_username}! Пожелаем вам счастья 💖",
+            reply_markup=main_menu
+        )
+    except:
+        pass
+
+    # Удаляем предложение из pending
     del pending[partner_username]
 
 @dp.callback_query_handler(lambda c: c.data and c.data.startswith('decline:'))
 async def decline(callback: types.CallbackQuery):
     partner = callback.from_user
+    if partner.username is None:
+        await callback.answer("Ваш @username не задан.", show_alert=True)
+        return
+
     partner_username = partner.username.lower()
     data = pending.get(partner_username)
     if not data:
@@ -229,70 +292,97 @@ async def decline(callback: types.CallbackQuery):
         return
 
     proposer_username = data["proposer_username"]
-    await callback.message.edit_text(f"💔 @{partner_username} отклонил(а) предложение @{proposer_username}.", reply_markup=help_kb)
+    await callback.message.edit_text(f"💔 @{partner_username} отклонил(а) предложение @{proposer_username}.", reply_markup=main_menu)
+
     del pending[partner_username]
 
+# ─────────────────────────────────────────────────────────────────────────────
 # Команда /my_spouse
 @dp.message_handler(commands=['my_spouse'])
 async def my_spouse(message: types.Message):
+    if message.from_user.username is None:
+        await message.reply("❗ Установите @username в настройках Telegram.", reply_markup=main_menu)
+        return
+
     user = message.from_user.username.lower()
     cursor.execute("SELECT user2 FROM marriages WHERE user1=?", (user,))
     row = cursor.fetchone()
     if row:
-        await message.reply(f"💍 Ты в браке с @{row[0]}.", reply_markup=help_kb)
+        await message.reply(f"💍 Ты в браке с @{row[0]}.", reply_markup=main_menu)
     else:
-        await message.reply("😢 У тебя нет партнёра.", reply_markup=help_kb)
+        await message.reply("😢 У тебя нет партнёра.", reply_markup=main_menu)
 
 # Команда /certificate (текстовое)
 @dp.message_handler(commands=['certificate'])
 async def certificate(message: types.Message):
+    if message.from_user.username is None:
+        await message.reply("❗ Установите @username в настройках Telegram.", reply_markup=main_menu)
+        return
+
     user = message.from_user.username.lower()
     cursor.execute("SELECT user2, married_at FROM marriages WHERE user1=?", (user,))
     row = cursor.fetchone()
     if row:
         partner, married_at = row
-        await message.reply(f"📜 Свидетельство:\n@{user} ❤️ @{partner}\nДата брака: {married_at}", reply_markup=help_kb)
+        await message.reply(f"📜 Свидетельство:\n@{user} ❤️ @{partner}\nДата брака: {married_at}", reply_markup=main_menu)
     else:
-        await message.reply("💔 Нет зарегистрированного брака.", reply_markup=help_kb)
+        await message.reply("💔 Нет зарегистрированного брака.", reply_markup=main_menu)
 
 # Команда /divorce
 @dp.message_handler(commands=['divorce'])
 async def divorce(message: types.Message):
+    if message.from_user.username is None:
+        await message.reply("❗ Установите @username в настройках Telegram.", reply_markup=main_menu)
+        return
+
     user = message.from_user.username.lower()
     cursor.execute("SELECT user2 FROM marriages WHERE user1=?", (user,))
     row = cursor.fetchone()
     if row:
         partner = row[0]
-        cursor.execute("DELETE FROM marriages WHERE (user1=? AND user2=?) OR (user1=? AND user2=?)",
-                       (user, partner, partner, user))
+        cursor.execute(
+            "DELETE FROM marriages WHERE (user1=? AND user2=?) OR (user1=? AND user2=?)",
+            (user, partner, partner, user)
+        )
         conn.commit()
-        await message.reply(f"💔 Брак между @{user} и @{partner} расторгнут.", reply_markup=help_kb)
+        await message.reply(f"💔 Брак между @{user} и @{partner} расторгнут.", reply_markup=main_menu)
     else:
-        await message.reply("❗ У тебя нет брака.", reply_markup=help_kb)
+        await message.reply("❗ У тебя нет брака.", reply_markup=main_menu)
 
 # Команда /anniversary — сколько дней в браке
 @dp.message_handler(commands=['anniversary'])
 async def anniversary(message: types.Message):
+    if message.from_user.username is None:
+        await message.reply("❗ Установите @username в настройках Telegram.", reply_markup=main_menu)
+        return
+
     user = message.from_user.username.lower()
     cursor.execute("SELECT married_at, user2 FROM marriages WHERE user1=?", (user,))
     row = cursor.fetchone()
     if not row:
-        await message.reply("😢 У тебя нет брака.", reply_markup=help_kb)
+        await message.reply("😢 У тебя нет брака.", reply_markup=main_menu)
         return
 
     married_at_str, partner = row
     married_at = datetime.strptime(married_at_str, "%Y-%m-%d %H:%M").date()
     days = (date.today() - married_at).days
-    await message.reply(f"💞 Вы в браке с @{partner} уже {days} дн{'ей' if days % 10 in (2,3,4) and days % 100 not in (12,13,14) else 'ей'}.", reply_markup=help_kb)
+    await message.reply(
+        f"💞 Вы в браке с @{partner} уже {days} дн{'ей' if days % 10 in (2,3,4) and days % 100 not in (12,13,14) else 'ей'}.",
+        reply_markup=main_menu
+    )
 
 # Команда /marriage_story — история брака
 @dp.message_handler(commands=['marriage_story'])
 async def marriage_story(message: types.Message):
+    if message.from_user.username is None:
+        await message.reply("❗ Установите @username в настройках Telegram.", reply_markup=main_menu)
+        return
+
     user = message.from_user.username.lower()
     cursor.execute("SELECT user2, married_at FROM marriages WHERE user1=?", (user,))
     row = cursor.fetchone()
     if not row:
-        await message.reply("😢 У тебя нет брака.", reply_markup=help_kb)
+        await message.reply("😢 У тебя нет брака.", reply_markup=main_menu)
         return
 
     partner, married_at = row
@@ -301,17 +391,21 @@ async def marriage_story(message: types.Message):
     await message.reply(
         f"📖 История:\nВы с @{partner} поженились {married_date.strftime('%d.%m.%Y в %H:%M')}.\n"
         f"💕 Вместе: {days} дн{'ей' if days % 10 in (2,3,4) and days % 100 not in (12,13,14) else 'ей'}.",
-        reply_markup=help_kb
+        reply_markup=main_menu
     )
 
 # Команда /download_certificate — PDF-свидетельство
 @dp.message_handler(commands=['download_certificate'])
 async def download_certificate(message: types.Message):
+    if message.from_user.username is None:
+        await message.reply("❗ Установите @username в настройках Telegram.", reply_markup=main_menu)
+        return
+
     user = message.from_user.username.lower()
     cursor.execute("SELECT user2, married_at FROM marriages WHERE user1=?", (user,))
     row = cursor.fetchone()
     if not row:
-        await message.reply("😢 У тебя нет брака.", reply_markup=help_kb)
+        await message.reply("😢 У тебя нет брака.", reply_markup=main_menu)
         return
 
     partner, married_at = row
@@ -325,22 +419,26 @@ async def download_certificate(message: types.Message):
     pdf.cell(0, 10, f"{datetime.strptime(married_at, '%Y-%m-%d %H:%M').strftime('%d.%m.%Y %H:%M')}", ln=True, align="C")
     pdf.ln(10)
     pdf.set_font("Arial", size=14)
-    pdf.cell(0, 10, f"{message.from_user.full_name} ❤️ {partner}", ln=True, align="C")
+    pdf.cell(0, 10, f"@{message.from_user.username} ❤️ @{partner}", ln=True, align="C")
 
     filename = f"certificate_{user}_{partner}.pdf"
     pdf.output(filename)
 
-    await message.reply_document(InputFile(filename))
+    await message.reply_document(InputFile(filename), reply_markup=main_menu)
     os.remove(filename)
 
 # Команда /gift — отправить подарок партнёру (ограничение 1 в день)
 @dp.message_handler(commands=['gift'])
 async def gift(message: types.Message):
+    if message.from_user.username is None:
+        await message.reply("❗ Установите @username в настройках Telegram.", reply_markup=main_menu)
+        return
+
     sender = message.from_user.username.lower()
     cursor.execute("SELECT user2 FROM marriages WHERE user1=?", (sender,))
     row = cursor.fetchone()
     if not row:
-        await message.reply("😢 У тебя нет партнёра.", reply_markup=help_kb)
+        await message.reply("😢 У тебя нет партнёра.", reply_markup=main_menu)
         return
 
     receiver = row[0]
@@ -352,7 +450,7 @@ async def gift(message: types.Message):
     """, (sender, receiver, today_str))
     count_today = cursor.fetchone()[0]
     if count_today >= 1:
-        await message.reply("❗ Сегодня вы уже дарили подарок. Попробуйте завтра.", reply_markup=help_kb)
+        await message.reply("❗ Сегодня вы уже дарили подарок. Попробуйте завтра.", reply_markup=main_menu)
         return
 
     # Сохраняем подарок
@@ -364,28 +462,32 @@ async def gift(message: types.Message):
     receiver_row = cursor.fetchone()
     if receiver_row:
         try:
-            await bot.send_message(receiver_row[0], f"🎁 @{sender} отправил(а) тебе подарок! 💖", reply_markup=help_kb)
-            await message.reply(f"🎁 Подарок отправлен @{receiver}!", reply_markup=help_kb)
+            await bot.send_message(receiver_row[0], f"🎁 @{sender} отправил(а) тебе подарок! 💖", reply_markup=main_menu)
+            await message.reply(f"🎁 Подарок отправлен @{receiver}!", reply_markup=main_menu)
         except:
-            await message.reply(f"❗ Не удалось отправить подарок @{receiver}.", reply_markup=help_kb)
+            await message.reply(f"❗ Не удалось отправить подарок @{receiver}.", reply_markup=main_menu)
     else:
-        await message.reply(f"❗ Не могу найти @{receiver} в базе.", reply_markup=help_kb)
+        await message.reply(f"❗ Не могу найти @{receiver} в базе.", reply_markup=main_menu)
 
 # Команда /my_marriage_profile — брачный профиль
 @dp.message_handler(commands=['my_marriage_profile'])
 async def marriage_profile(message: types.Message):
+    if message.from_user.username is None:
+        await message.reply("❗ Установите @username в настройках Telegram.", reply_markup=main_menu)
+        return
+
     user = message.from_user.username.lower()
     cursor.execute("SELECT user2, married_at FROM marriages WHERE user1=?", (user,))
     row = cursor.fetchone()
     if not row:
-        await message.reply("😢 У тебя нет брака.", reply_markup=help_kb)
+        await message.reply("😢 У тебя нет брака.", reply_markup=main_menu)
         return
 
     partner, married_at = row
     married_date = datetime.strptime(married_at, "%Y-%m-%d %H:%M")
     days = (date.today() - married_date.date()).days
 
-    # Считаем подарки, полученные этим пользователем
+    # Считаем, сколько подарков получил пользователь
     cursor.execute("SELECT COUNT(*) FROM gifts WHERE receiver=?", (user,))
     gifts_received = cursor.fetchone()[0]
 
@@ -396,7 +498,8 @@ async def marriage_profile(message: types.Message):
         f"🕒 Вместе: {days} дн{'ей' if days % 10 in (2,3,4) and days % 100 not in (12,13,14) else 'ей'}\n"
         f"🎁 Подарков получено: {gifts_received}"
     )
-    await message.reply(profile_text, reply_markup=help_kb)
+    await message.reply(profile_text, reply_markup=main_menu)
 
+# ─────────────────────────────────────────────────────────────────────────────
 if __name__ == '__main__':
     executor.start_polling(dp, skip_updates=True)
