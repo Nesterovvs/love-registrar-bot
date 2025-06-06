@@ -6,6 +6,8 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils import executor
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
+from aiogram.dispatcher.filters.state import State, StatesGroup
+from aiogram.dispatcher import FSMContext
 
 API_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = 1096930119
@@ -23,6 +25,9 @@ conn.commit()
 
 pending = {}
 
+class Broadcast(StatesGroup):
+    waiting_message = State()
+
 @dp.message_handler(commands=['start'])
 async def start(message: types.Message):
     user = message.from_user
@@ -36,8 +41,33 @@ async def start(message: types.Message):
         "/certificate – свидетельство\n"
         "/divorce – развод\n"
         "/my_spouse – кто твой партнёр?\n"
-        "/admin – только для админа"
+        "/broadcast – рассылка (только для админа)"
     )
+
+@dp.message_handler(commands=['broadcast'])
+async def broadcast_cmd(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    await message.reply("✉️ Введи сообщение для рассылки:")
+    await Broadcast.waiting_message.set()
+
+@dp.message_handler(state=Broadcast.waiting_message, content_types=types.ContentTypes.TEXT)
+async def process_broadcast(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    text = message.text
+    success = 0
+    failed = 0
+    cursor.execute("SELECT user_id FROM users")
+    users = cursor.fetchall()
+    for (uid,) in users:
+        try:
+            await bot.send_message(uid, text)
+            success += 1
+        except:
+            failed += 1
+    await message.reply(f"📢 Рассылка завершена\n✅ Успешно: {success}\n❌ Ошибок: {failed}")
+    await state.finish()
 
 @dp.message_handler(commands=['marry'])
 async def marry(message: types.Message):
@@ -45,48 +75,76 @@ async def marry(message: types.Message):
     if len(parts) != 2 or not parts[1].startswith('@'):
         await message.reply("❗ Формат: /marry @username")
         return
-    proposer = message.from_user.username
-    partner = parts[1][1:]
-    if proposer == partner:
+    proposer = message.from_user
+    partner_username = parts[1][1:]
+
+    if proposer.username == partner_username:
         await message.reply("😅 Нельзя жениться на себе")
         return
 
-    pending[partner] = proposer
+    cursor.execute("INSERT OR IGNORE INTO users (user_id, username, first_name) VALUES (?, ?, ?)",
+                   (proposer.id, proposer.username, proposer.first_name))
+    conn.commit()
+
+    pending[partner_username] = {
+        "proposer_id": proposer.id,
+        "proposer_username": proposer.username
+    }
+
     markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("💖 Принять", callback_data=f"accept_{proposer}"))
-    markup.add(InlineKeyboardButton("❌ Отказать", callback_data=f"decline_{proposer}"))
-    await message.reply(f"@{partner}, @{proposer} предлагает тебе брак! 💍", reply_markup=markup)
+    markup.add(InlineKeyboardButton("💖 Принять", callback_data=f"accept_{partner_username}"))
+    markup.add(InlineKeyboardButton("❌ Отказать", callback_data=f"decline_{partner_username}"))
+
+    cursor.execute("SELECT user_id FROM users WHERE username=?", (partner_username,))
+    partner_row = cursor.fetchone()
+
+    if partner_row:
+        try:
+            await bot.send_message(partner_row[0], f"@{partner_username}, @{proposer.username} предлагает тебе брак! 💍", reply_markup=markup)
+            await message.reply(f"✅ Предложение отправлено @{partner_username}")
+        except:
+            await message.reply(f"❗ Не удалось отправить сообщение @{partner_username}.")
+    else:
+        await message.reply(f"❗ @{partner_username} ещё не писал боту. Попроси его нажать /start.")
 
 @dp.callback_query_handler(lambda c: c.data and c.data.startswith('accept_'))
 async def accept(callback: types.CallbackQuery):
-    partner = callback.from_user.username
-    proposer = callback.data.split('_')[1]
+    partner = callback.from_user
+    proposer_username = callback.data.split('_')[1]
+
+    proposer_data = pending.get(partner.username)
+    if not proposer_data:
+        await callback.message.edit_text("❗ Предложение не найдено или устарело.")
+        return
+
+    proposer_id = proposer_data["proposer_id"]
+    proposer_name = proposer_data["proposer_username"]
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    cursor.execute("INSERT INTO marriages (user1, user2, married_at) VALUES (?, ?, ?)", (proposer, partner, timestamp))
-    cursor.execute("INSERT INTO marriages (user1, user2, married_at) VALUES (?, ?, ?)", (partner, proposer, timestamp))
+    cursor.execute("INSERT INTO marriages (user1, user2, married_at) VALUES (?, ?, ?)", (proposer_name, partner.username, timestamp))
+    cursor.execute("INSERT INTO marriages (user1, user2, married_at) VALUES (?, ?, ?)", (partner.username, proposer_name, timestamp))
     conn.commit()
 
-    await callback.message.edit_text(f"🎉 @{proposer} и @{partner} теперь пара!")
+    await callback.message.edit_text(f"🎉 @{proposer_name} и @{partner.username} теперь пара!")
 
-    # Авто-уведомления
-    cursor.execute("SELECT user_id FROM users WHERE username=?", (proposer,))
-    proposer_id_row = cursor.fetchone()
-    if proposer_id_row:
-        try:
-            await bot.send_message(proposer_id_row[0], f"🎉 Вы теперь в браке с @{partner}!\nПожелаем вам счастья 💖")
-        except:
-            pass
+    cursor.execute("INSERT OR IGNORE INTO users (user_id, username, first_name) VALUES (?, ?, ?)",
+                   (partner.id, partner.username, partner.first_name))
+    conn.commit()
 
     try:
-        await bot.send_message(callback.from_user.id, f"🎉 Вы теперь в браке с @{proposer}!\nПожелаем вам счастья 💖")
+        await bot.send_message(proposer_id, f"🎉 Вы теперь в браке с @{partner.username}!\nПожелаем вам счастья 💖")
+    except:
+        pass
+
+    try:
+        await bot.send_message(partner.id, f"🎉 Вы теперь в браке с @{proposer_name}!\nПожелаем вам счастья 💖")
     except:
         pass
 
 @dp.callback_query_handler(lambda c: c.data and c.data.startswith('decline_'))
 async def decline(callback: types.CallbackQuery):
-    proposer = callback.data.split('_')[1]
-    await callback.message.edit_text(f"💔 @{callback.from_user.username} отклонил(а) предложение @{proposer}")
+    proposer_username = callback.data.split('_')[1]
+    await callback.message.edit_text(f"💔 @{callback.from_user.username} отклонил(а) предложение @{proposer_username}")
 
 @dp.message_handler(commands=['my_spouse'])
 async def my_spouse(message: types.Message):
